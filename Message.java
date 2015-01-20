@@ -1,5 +1,5 @@
 /*
- * @author Tosin Afolabi
+ * @author Yves Findlay
  * 
  * This class defines the communication protocal 
  * that will be used between the Server & Client

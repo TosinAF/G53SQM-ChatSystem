@@ -2,273 +2,298 @@
  * The Class Server.
  *
  * @author Yves Findlay
- * 
+ *
  * Implementation for the Server class.
  */
-
 import java.io.*;
 import java.net.*;
 import java.text.SimpleDateFormat;
 import java.util.*;
+import java.util.concurrent.atomic.AtomicInteger;
 
 public class Server implements IServer {
 
-	private static int uniqueId;
+    private static final AtomicInteger uniqueId = new AtomicInteger();
 
-	private int port = 1025;
-	private SimpleDateFormat simpleDateFormat;
-	private boolean acceptConnections;
-	private ArrayList<ClientThread> clientThreads;
+    private int port = 1025;
+    private SimpleDateFormat simpleDateFormat;
+    private boolean acceptConnections;
+    private final ArrayList<ClientThread> clientThreads = new ArrayList<>();
 
-	public Server() {
-		simpleDateFormat = new SimpleDateFormat("HH:mm:ss");
-		clientThreads = new ArrayList<ClientThread>();
-	}
+    public Server() {
+        simpleDateFormat = new SimpleDateFormat("HH:mm:ss");
+    }
 
-	public static void main(String[] args) {
-		Server server = new Server();
-		server.start();
-	}
+    public static void main(String[] args) {
+        Server server = new Server();
+        server.start();
+    }
 
-	public void start() {
-		acceptConnections = true;
+    @Override
+    public void start() {
+        acceptConnections = true;
 
-		try {
+        try {
 
-			ServerSocket serverSocket = new ServerSocket(port);
+            ServerSocket serverSocket = new ServerSocket(port);
 
-			while (acceptConnections) {
+            while (acceptConnections) {
 
-				display("Server waiting for Clients on port " + port + ".");
+                display("Server waiting for Clients on port " + port + ".");
 
-				Socket socket = serverSocket.accept();
+                Socket socket = serverSocket.accept();
 
-				if (!acceptConnections)
-					break;
+                if (!acceptConnections) {
+                    break;
+                }
 
-				ClientThread clientThread = new ClientThread(socket);
-				clientThread.start();
-			}
+                ClientThread clientThread = new ClientThread(socket);
+                clientThread.start();
+            }
 
-			try {
-				serverSocket.close();
-				
-				for (ClientThread clientThread : clientThreads) {
-					
-					try {
-						clientThread.sInput.close();
-						clientThread.sOutput.close();
-						clientThread.socket.close();
-					} catch (IOException e) {
-					}
-					
-				}
+            try {
+                serverSocket.close();
+                synchronized (clientThreads) {
+                    for (ClientThread clientThread : clientThreads) {
 
-			} catch (Exception e) {
-				display("Exception closing the server and clients: " + e);
-			}
-		}
+                        try {
+                            clientThread.sInput.close();
+                            clientThread.sOutput.close();
+                            clientThread.socket.close();
+                        } catch (IOException e) {
+                        }
 
-		catch (IOException e) {
-			String msg = simpleDateFormat.format(new Date())
-					+ " Exception on new ServerSocket: " + e + "\n";
-			display(msg);
-		}
-	}
+                    }
+                }
 
-	public void stop() {
-		acceptConnections = false;
+            } catch (Exception e) {
+                display("Exception closing the server and clients: " + e);
+            }
+        } catch (IOException e) {
+            String msg = simpleDateFormat.format(new Date())
+                    + " Exception on new ServerSocket: " + e + "\n";
+            display(msg);
+        }
+    }
 
-		try {
+    public void stop() {
+        acceptConnections = false;
+    }
 
-			new Socket("localhost", port);
+    public void broadcast(String username, String message) {
 
-		} catch (Exception e) {
-		}
-	}
+        message = username + ": " + message;
 
-	public synchronized void broadcast(String message) {
+        String time = simpleDateFormat.format(new Date());
+        String messageLf = "[" + time + "] " + message + "\n";
 
-		String time = simpleDateFormat.format(new Date());
-		String messageLf = "[" + time + "] " + message + "\n";
+        System.out.print(messageLf);
+        ArrayList<ClientThread> localList;
+        synchronized (clientThreads) {
+            localList = new ArrayList<>(clientThreads);
+        }
+        for (int i = localList.size(); --i >= 0;) {
 
-		System.out.print(messageLf);
+            ClientThread clientThread = localList.get(i);
 
-		for (int i = clientThreads.size(); --i >= 0;) {
+            if (!clientThread.sendMessage(new Message(Message.MessageProtocol.MESSAGE, messageLf))) {
+                remove(clientThread.id);
+                display("Disconnected Client " + clientThread.username
+                        + " removed from list.");
+            }
+        }
+    }
 
-			ClientThread clientThread = clientThreads.get(i);
+    public void remove(int id) {
+        synchronized (clientThreads) {
+            for (int i = 0; i < clientThreads.size(); ++i) {
 
-			if (!clientThread.sendMessage(new Message(Message.MessageProtocol.MESSAGE, messageLf))) {
-				clientThreads.remove(i);
-				display("Disconnected Client " + clientThread.username
-						+ " removed from list.");
-			}
-		}
-	}
+                ClientThread clientThread = clientThreads.get(i);
 
-	public synchronized void remove(int id) {
+                if (clientThread.id == id) {
+                    clientThreads.remove(i);
+                    return;
+                }
+            }
+        }
+    }
 
-		for (int i = 0; i < clientThreads.size(); ++i) {
+    public void display(String msg) {
+        String time = simpleDateFormat.format(new Date()) + " " + msg;
+        System.out.println(time);
+    }
 
-			ClientThread clientThread = clientThreads.get(i);
+    @Override
+    public void broadcast(Message message) {
+        throw new UnsupportedOperationException("Not supported yet."); //To change body of generated methods, choose Tools | Templates.
+    }
 
-			if (clientThread.id == id) {
-				clientThreads.remove(i);
-				return;
-			}
-		}
-	}
+    class ClientThread extends Thread {
 
-	public void display(String msg) {
-		String time = simpleDateFormat.format(new Date()) + " " + msg;
-		System.out.println(time);
-	}
+        Socket socket;
+        ObjectInputStream sInput;
+        ObjectOutputStream sOutput;
 
-	class ClientThread extends Thread {
+        int id;
+        String username, date;
+        volatile boolean authenticated = false;
 
-		Socket socket;
-		ObjectInputStream sInput;
-		ObjectOutputStream sOutput;
+        ClientThread(Socket socket) {
 
-		int id;
-		Message message;
-		String username, date;
-		
-		ClientThread(Socket socket) {
+            id = uniqueId.incrementAndGet();
+            this.socket = socket;
 
-			id = ++uniqueId;
-			this.socket = socket;
+            System.out
+                    .println("Thread trying to create Object Input/Output Streams");
 
-			System.out
-					.println("Thread trying to create Object Input/Output Streams");
+            try {
 
-			try {
+                sOutput = new ObjectOutputStream(socket.getOutputStream());
+                sInput = new ObjectInputStream(socket.getInputStream());
 
-				sOutput = new ObjectOutputStream(socket.getOutputStream());
-				sInput = new ObjectInputStream(socket.getInputStream());
+                display("New connection was made!");
 
-				display("New connection was made!");
+            } catch (IOException e) {
 
-			} catch (IOException e) {
+                display("Exception creating new Input/output Streams: " + e);
+                return;
+            }
 
-				display("Exception creating new Input/output Streams: " + e);
-				return;
-			}
+            date = new Date().toString() + "\n";
+        }
 
-			date = new Date().toString() + "\n";
-		}
+        public void run() {
 
-		public void run() {
+            boolean isAlive = true;
+            Message message;
 
-			boolean isAlive = true;
+            while (isAlive) {
 
-			while (isAlive) {
+                try {
 
-				try {
+                    message = (Message) sInput.readObject();
 
-					message = (Message) sInput.readObject();
+                } catch (IOException e) {
 
-				} catch (IOException e) {
+                    display(username + " Exception reading Streams: " + e);
+                    break;
 
-					display(username + " Exception reading Streams: " + e);
-					break;
+                } catch (ClassNotFoundException e2) {
 
-				} catch (ClassNotFoundException e2) {
+                    break;
+                }
 
-					break;
-				}
+                String text = message.getText();
 
-				String text = message.getText();
+                switch (message.getType()) {
 
-				switch (message.getType()) {
-				
-				case LOGIN:
-					
-					String givenUsername = text;
-					
-					Boolean foundUsername = false;
-					for (ClientThread clientThread : clientThreads) {
-						if ( clientThread.username.equals(givenUsername) ) {
-							sendMessage(new Message(Message.MessageProtocol.AUTHSTATUS, "notAuthenticated"));
-							foundUsername = true;
-							break;
-						}
-					}
-					
-					if (!foundUsername) {
-						username = text;
-						display(username + " logged in!");
-						sendMessage(new Message(Message.MessageProtocol.AUTHSTATUS, "Authenticated"));
-						clientThreads.add(this);
-					}
-					
-					break;
-					
-				case AUTHSTATUS:
-					display("[ERROR]: Client should not be sending an auth message!");
-					break;
-					
-				case MESSAGE:
-					
-					broadcast(username + ": " + text);
-					break;
+                    case LOGIN:
 
-				case LOGOUT:
-					
-					display(username + " logged out");
-					isAlive = false;
-					break;
+                        String givenUsername = text;
 
-				case LIST:
-					
-					String outputTitle = "List of the users connected:\n";
-					sendMessage(new Message(Message.MessageProtocol.MESSAGE, outputTitle));
-					
-					for (int i = 0; i < clientThreads.size(); ++i) {
-						
-						ClientThread clientThread = clientThreads.get(i);
-						String outputLine = (i + 1) + ") " + clientThread.username + "\n";
-						sendMessage(new Message(Message.MessageProtocol.MESSAGE, outputLine));	
-					}
-					break;
-				}
-			}
+                        Boolean foundUsername = false;
+                        synchronized (clientThreads) {
+                            for (ClientThread clientThread : clientThreads) {
+                                if (clientThread.username.equals(givenUsername)) {
+                                    foundUsername = true;
+                                    break;
+                                }
+                            }
+                        }
 
-			remove(id);
-			close();
-		}
+                        if (!foundUsername) {
+                            authenticated = true;
+                            username = text;
+                            display(username + " logged in!");
+                            sendMessage(new Message(Message.MessageProtocol.AUTHSTATUS, "Authenticated"));
+                            synchronized (clientThreads) {
+                                clientThreads.add(this);
+                            }
+                        } else {
+                            sendMessage(new Message(Message.MessageProtocol.AUTHSTATUS, "notAuthenticated"));
+                        }
 
+                        break;
 
-		private void close() {
+                    case AUTHSTATUS:
+                        display("[ERROR]: Client should not be sending an auth message!");
+                        break;
 
-			try {
+                    case MESSAGE:
+                        if (!authenticated) {
+                            sendMessage(new Message(Message.MessageProtocol.AUTHSTATUS, "notAuthenticated"));
+                            return;
+                        }
+                        broadcast(username, text);
+                        break;
 
-				if (sOutput != null)
-					sOutput.close();
-				if (sInput != null)
-					sInput.close();
-				if (socket != null)
-					socket.close();
+                    case LOGOUT:
+                        if (!authenticated) {
+                            sendMessage(new Message(Message.MessageProtocol.AUTHSTATUS, "notAuthenticated"));
+                            return;
+                        }
+                        display(username + " logged out");
+                        isAlive = false;
+                        break;
 
-			} catch (Exception e) {
-			}
-		}
-		
-		private boolean sendMessage(Message msg) {
+                    case LIST:
+                        if (!authenticated) {
+                            sendMessage(new Message(Message.MessageProtocol.AUTHSTATUS, "notAuthenticated"));
+                            return;
+                        }
+                        String outputTitle = "List of the users connected:\n";
+                        sendMessage(new Message(Message.MessageProtocol.MESSAGE, outputTitle));
+                        ArrayList<ClientThread> localList;
+                        synchronized (clientThreads) {
+                            localList = new ArrayList<>(clientThreads);
+                        }
+                        for (int i = 0; i < localList.size(); ++i) {
 
-			if (!socket.isConnected()) {
-				close();
-				return false;
-			}
+                            ClientThread clientThread = localList.get(i);
+                            String outputLine = (i + 1) + ") " + clientThread.username + "\n";
+                            sendMessage(new Message(Message.MessageProtocol.MESSAGE, outputLine));
+                        }
+                        break;
+                }
+            }
 
-			try {
-				sOutput.writeObject(msg);
-			} catch (IOException e) {
-				display("Error sending message to " + username);
-				display(e.toString());
-			}
+            remove(id);
+            close();
+        }
 
-			return true;
-		}
-	}
+        private void close() {
+
+            try {
+
+                if (sOutput != null) {
+                    sOutput.close();
+                }
+                if (sInput != null) {
+                    sInput.close();
+                }
+                if (socket != null) {
+                    socket.close();
+                }
+
+            } catch (Exception e) {
+            }
+        }
+
+        private boolean sendMessage(Message msg) {
+
+            if (!socket.isConnected()) {
+                close();
+                return false;
+            }
+
+            try {
+                sOutput.writeObject(msg);
+            } catch (IOException e) {
+                display("Error sending message to " + username);
+                display(e.toString());
+            }
+
+            return true;
+        }
+    }
 }
